@@ -5,18 +5,21 @@ import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.HttpResponse;
+import org.codehaus.jackson.annotate.JsonProperty;
+import org.codehaus.jackson.annotate.JsonAnySetter;
+import org.codehaus.jackson.map.annotate.JsonDeserialize;
+import org.codehaus.jackson.map.JsonDeserializer;
+import org.codehaus.jackson.map.DeserializationContext;
+import org.codehaus.jackson.map.ObjectMapper;
+import org.codehaus.jackson.JsonParser;
+import org.codehaus.jackson.JsonFactory;
 
-import java.io.InputStream;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.IOException;
+import java.io.*;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.Date;
 import java.text.SimpleDateFormat;
 import java.text.ParseException;
-
-import net.sf.json.JSONObject;
 
 /**
  * A very simple implementation of a Twitter client utilizing the new Twitter stream APIs:
@@ -26,11 +29,11 @@ import net.sf.json.JSONObject;
  * The client connects to the stream API and parses the statuses returned, printing some simple
  * diagnostic information on each status update to the screen.
  *
- * This client makes use of Apache HttpComponents HttpClient and json-lib, which are available
+ * This client makes use of Apache HttpComponents HttpClient and Jackson, which are available
  * at the URLs below.
  *
  *     http://hc.apache.org/httpcomponents-client/
- *     http://json-lib.sourceforge.net/
+ *     http://jackson.codehaus.org/
  *
  * @author Ryan Kennedy <ryan.kennedy@yahoo.com>
  */
@@ -56,12 +59,12 @@ public class TwitterStreamer {
             // Iterate over the TwitterStatus objects parsed from the stream.
             for(TwitterStatus status : stream) {
                 // Dump out some simple information so we can see the tweets being fetched and parsed.
-                System.out.println(String.format("Tweet from %s (%s)", status.getUser().getName(), status.getUser().getScreenName()));
-                System.out.println(String.format("  %s", status.getText()));
+                System.out.println(String.format("Tweet from %s (%s)", status.user.name, status.user.screenName));
+                System.out.println(String.format("  %s", status.text));
                 System.out.println("--------------------------------------------------");
             }
         }
-        catch(IOException e) {
+        catch(Exception e) {
             // Handle errors. Disconnects, for example.
             System.err.println("Error connecting to spritzer: " + e.toString());
         }
@@ -73,8 +76,8 @@ public class TwitterStreamer {
     private static class TwitterStream implements Iterable<TwitterStatus> {
         private TwitterStatusIterator iterator;
 
-        public TwitterStream(InputStream stream) {
-            iterator = new TwitterStatusIterator(stream);
+        public TwitterStream(InputStream stream) throws Exception {
+            iterator = new TwitterStatusIterator(new JsonFactory().createJsonParser(stream));
         }
 
         public Iterator<TwitterStatus> iterator() {
@@ -87,13 +90,13 @@ public class TwitterStreamer {
      * don't bicker too much over the InputStream.
      */
     private static class TwitterStatusIterator implements Iterator<TwitterStatus> {
-        private BufferedReader reader;
+        private ObjectMapper mapper;
+        private JsonParser parser;
         private TwitterStatus next;
 
-        public TwitterStatusIterator(InputStream stream) {
-            // Buffer the InputStream, the Twitter stream API returns statuses in JSON one per line
-            // (newline delimited).
-            reader = new BufferedReader(new InputStreamReader(stream));
+        public TwitterStatusIterator(JsonParser parser) {
+            mapper = new ObjectMapper();
+            this.parser = parser;
             next = null;
         }
 
@@ -103,8 +106,7 @@ public class TwitterStreamer {
             if(next == null) {
                 try {
                     // No TwitterStatus held, try reading one.
-                    JSONObject object = JSONObject.fromObject(readLine());
-                    next = new TwitterStatus(object);
+                    next = mapper.readValue(parser, TwitterStatus.class);
                 }
                 catch(IOException e) {
                     // Failed to read one.
@@ -132,96 +134,89 @@ public class TwitterStreamer {
             // Remove isn't supported by this Iterator.
             throw new UnsupportedOperationException("TwitterStatusIterator doesn't support removal.");
         }
+    }
 
-        private synchronized String readLine() throws IOException {
-            // Synchronized access to the reader.
-            return reader.readLine();
+    public static class TwitterStatus {
+        @JsonProperty(value = "in_reply_to_user_id")
+        public String inReplyToUserId;
+
+        @JsonProperty(value = "favorited")
+        public Boolean favorited;
+
+        @JsonProperty(value = "in_reply_to_screen_name")
+        public String inReplyToScreenName;
+
+        @JsonProperty(value = "created_at")
+        @JsonDeserialize(using = TwitterDateDeserializer.class)
+        public Date createdAt;
+
+        public String text;
+
+        public TwitterUser user;
+
+        public Long id;
+
+        @JsonProperty(value = "in_reply_to_status_id")
+        public Long inReplyToStatusId;
+
+        public String source;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            // System.out.println(String.format("Missing @JsonProperty in TwitterStatus for %s", key));
         }
     }
 
-    /**
-     * A simple TwitterStatus object to wrap the underlying JSONObject.
-     */
-    private static class TwitterStatus {
-        private JSONObject status;
-        private TwitterUser user;
+    public static class TwitterUser {
+        @JsonProperty(value = "profile_image_url")
+        public String profileImageUrl;
 
-        public TwitterStatus(JSONObject status) {
-            this.status = status;
-            user = new TwitterUser(status.getJSONObject("user"));
-        }
+        public Boolean verified;
 
-        public String getText() {
-            return status.getString("text");
-        }
+        public String description;
 
-        public Date getCreatedAt() throws ParseException {
-            SimpleDateFormat sdf = new SimpleDateFormat("E M d H:m:s Z y");
-            return sdf.parse(status.getString("created_at"));
-        }
+        @JsonProperty(value = "screen_name")
+        public String screenName;
 
-        public String getSource() {
-            return status.getString("source");
-        }
+        @JsonProperty(value = "followers_count")
+        public Long followersCount;
 
-        public TwitterUser getUser() {
-            return user;
-        }
+        public String name;
 
-        @Override
-        public String toString() {
-            return status.toString(2);
+        @JsonProperty(value = "created_at")
+        @JsonDeserialize(using = TwitterDateDeserializer.class)
+        public Date createdAt;
+
+        @JsonProperty(value = "friends_count")
+        public Long friendsCount;
+
+        @JsonProperty(value = "statuses_count")
+        public Long statusesCount;
+
+        @JsonProperty(value = "favourites_count")
+        public Long favouritesCount;
+
+        public String url;
+
+        public Long id;
+
+        public String location;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            // System.out.println(String.format("Missing @JsonProperty in TwitterUser for %s", key));
         }
     }
 
-    /**
-     * A simple TwitterUser object to wrap the underlying JSONObject.
-     */
-    private static class TwitterUser {
-        private JSONObject user;
-
-        public TwitterUser(JSONObject user) {
-            this.user = user;
-        }
-
-        public String getUrl() {
-            return user.getString("url");
-        }
-
-        public String getProfileImageUrl() {
-            return user.getString("profile_image_url");
-        }
-
-        public String getScreenName() {
-            return user.getString("screen_name");
-        }
-
-        public String getLocation() {
-            return user.getString("location");
-        }
-
-        public String getName() {
-            return user.getString("name");
-        }
-
-        public long getFriendCount() {
-            return user.getLong("friends_count");
-        }
-
-        public long getStatusesCount() {
-            return user.getLong("statuses_count");
-        }
-
-        public long getFavouritesCount() {
-            return user.getLong("favourites_count");
-        }
-
-        public long getFollowersCount() {
-            return user.getLong("followers_count");
-        }
-
-        public String getDescription() {
-            return user.getString("description");
+    public static class TwitterDateDeserializer extends JsonDeserializer<Date> {
+        public Date deserialize(JsonParser jp, DeserializationContext ctxt) throws IOException {
+            try {
+                SimpleDateFormat sdf = new SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy");
+                return sdf.parse(jp.getText());
+            }
+            catch(ParseException e) {
+                throw new IOException("Error parsing Twitter date format: " + e.toString());
+            }
         }
     }
 }
