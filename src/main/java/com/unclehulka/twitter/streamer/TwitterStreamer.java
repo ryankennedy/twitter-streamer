@@ -5,14 +5,13 @@ import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.HttpResponse;
+import org.codehaus.jackson.*;
 import org.codehaus.jackson.annotate.JsonProperty;
 import org.codehaus.jackson.annotate.JsonAnySetter;
 import org.codehaus.jackson.map.annotate.JsonDeserialize;
 import org.codehaus.jackson.map.JsonDeserializer;
 import org.codehaus.jackson.map.DeserializationContext;
 import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.JsonParser;
-import org.codehaus.jackson.JsonFactory;
 
 import java.io.*;
 import java.util.Iterator;
@@ -48,7 +47,7 @@ public class TwitterStreamer {
                 new UsernamePasswordCredentials("username", "password"));
 
         // Call the "spritzer" stream, the others (gardenhose and firehose) require approval from Twitter.
-        HttpGet get = new HttpGet("http://stream.twitter.com/spritzer.json");
+        HttpGet get = new HttpGet("http://stream.twitter.com/1/statuses/sample.json");
         try {
             // Execute the request.
             HttpResponse response = client.execute(get);
@@ -59,14 +58,30 @@ public class TwitterStreamer {
             // Iterate over the TwitterStatus objects parsed from the stream.
             for(TwitterStatus status : stream) {
                 // Dump out some simple information so we can see the tweets being fetched and parsed.
-                System.out.println(String.format("Tweet from %s (%s)", status.user.name, status.user.screenName));
-                System.out.println(String.format("  %s", status.text));
-                System.out.println("--------------------------------------------------");
+                if(status.user != null) {
+                    System.out.println(String.format("Tweet from %s (%s)", status.user.name, status.user.screenName));
+                    System.out.println(String.format("  %s", status.text));
+                    System.out.println("--------------------------------------------------");
+                }
+                else if(status.delete != null) {
+                    System.out.println(String.format("Tweet %s deleted by %s", status.delete.status.id, status.delete.status.user_id));
+                    System.out.println("--------------------------------------------------");
+                }
+                else {
+                    System.out.println("USER IS NULL!!!");
+                    JsonGenerator generator = new JsonFactory().createJsonGenerator(System.out, JsonEncoding.UTF8);
+                    generator.setCodec(new ObjectMapper());
+                    generator.writeObject(status);
+                    System.exit(1);
+                }
             }
+
+            System.out.println("No more statuses");
         }
         catch(Exception e) {
             // Handle errors. Disconnects, for example.
-            System.err.println("Error connecting to spritzer: " + e.toString());
+            System.out.println("Error connecting to spritzer: " + e.toString());
+            e.printStackTrace(System.out);
         }
     }
 
@@ -137,74 +152,150 @@ public class TwitterStreamer {
     }
 
     public static class TwitterStatus {
+        public Boolean truncated;
+
+        public String text;
+
+        public Boolean favorited;
+
         @JsonProperty(value = "in_reply_to_user_id")
         public String inReplyToUserId;
 
-        @JsonProperty(value = "favorited")
-        public Boolean favorited;
+        @JsonProperty(value = "in_reply_to_status_id")
+        public Long inReplyToStatusId;
 
         @JsonProperty(value = "in_reply_to_screen_name")
         public String inReplyToScreenName;
 
-        @JsonProperty(value = "created_at")
-        @JsonDeserialize(using = TwitterDateDeserializer.class)
-        public Date createdAt;
+        public String source;
 
-        public String text;
+        public String contributors;
+
+        public String geo;
 
         public TwitterUser user;
 
         public Long id;
 
-        @JsonProperty(value = "in_reply_to_status_id")
-        public Long inReplyToStatusId;
+        @JsonProperty(value = "created_at")
+        @JsonDeserialize(using = TwitterDateDeserializer.class)
+        public Date createdAt;
 
-        public String source;
+        public TwitterDelete delete;
+
+        @JsonProperty(value = "retweeted_status")
+        public TwitterStatus retweet;
 
         @JsonAnySetter
         public void setProperty(String key, Object value) {
-            // System.out.println(String.format("Missing @JsonProperty in TwitterStatus for %s", key));
+            System.out.println(String.format("Missing @JsonProperty in TwitterStatus for %s => %s", key, value.toString()));
+            System.exit(1);
         }
     }
 
     public static class TwitterUser {
-        @JsonProperty(value = "profile_image_url")
-        public String profileImageUrl;
+        @JsonProperty(value = "contributors_enabled")
+        public Boolean contributorsEnabled;
 
-        public Boolean verified;
-
-        public String description;
+        @JsonProperty(value = "profile_sidebar_fill_color")
+        public String profileSidebarFillColor;
 
         @JsonProperty(value = "screen_name")
         public String screenName;
 
+        @JsonProperty(value = "lang")
+        public String language;
+
+        @JsonProperty(value = "profile_background_tile")
+        public Boolean profileBackgroundTile;
+
+        public String location;
+
+        public Boolean following;
+
+        @JsonProperty(value = "profile_sidebar_border_color")
+        public String profileSidebarBorderColor;
+
+        public Boolean verified;
+
         @JsonProperty(value = "followers_count")
         public Long followersCount;
 
+        public String description;
+
+        @JsonProperty(value = "friends_count")
+        public Long friendsCount;
+
+        public Boolean notifications;
+
+        @JsonProperty(value = "profile_background_color")
+        public String profileBackgroundColor;
+
+        public String url;
+
+        @JsonProperty(value = "favourites_count")
+        public Long favoritesCount;
+
+        @JsonProperty(value = "profile_text_color")
+        public String profileTextColor;
+
+        @JsonProperty(value = "protected")
+        public Boolean isProtected;
+
+        @JsonProperty(value = "time_zone")
+        public String timeZone;
+
         public String name;
+
+        @JsonProperty(value = "statuses_count")
+        public Long statusesCount;
+
+        @JsonProperty(value = "profile_link_color")
+        public String profileLinkColor;
+
+        @JsonProperty(value = "profile_image_url")
+        public String profileImageUrl;
+
+        public String id;
+
+        @JsonProperty(value = "geo_enabled")
+        public Boolean geoEnabled;
+
+        @JsonProperty(value = "profile_background_image_url")
+        public String profileBackgroundImageUrl;
+
+        @JsonProperty(value = "utc_offset")
+        public Long utcOffset;
 
         @JsonProperty(value = "created_at")
         @JsonDeserialize(using = TwitterDateDeserializer.class)
         public Date createdAt;
 
-        @JsonProperty(value = "friends_count")
-        public Long friendsCount;
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.out.println(String.format("Missing @JsonProperty in TwitterStatus for %s => %s", key, value.toString()));
+            System.exit(1);
+        }
+    }
 
-        @JsonProperty(value = "statuses_count")
-        public Long statusesCount;
-
-        @JsonProperty(value = "favourites_count")
-        public Long favouritesCount;
-
-        public String url;
-
-        public Long id;
-
-        public String location;
+    public static class TwitterDelete {
+        public TwitterDeletedStatus status;
 
         @JsonAnySetter
         public void setProperty(String key, Object value) {
-            // System.out.println(String.format("Missing @JsonProperty in TwitterUser for %s", key));
+            System.out.println(String.format("Missing @JsonProperty in TwitterDelete for %s => %s", key, value.toString()));
+            System.exit(1);
+        }
+    }
+
+    public static class TwitterDeletedStatus {
+        public String id;
+        public String user_id;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.out.println(String.format("Missing @JsonProperty in TwitterDeletedStatus for %s => %s", key, value.toString()));
+            System.exit(1);
         }
     }
 
