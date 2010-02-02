@@ -1,5 +1,6 @@
 package com.unclehulka.twitter.streamer;
 
+import org.apache.http.client.ClientProtocolException;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -19,6 +20,7 @@ import java.util.NoSuchElementException;
 import java.util.Date;
 import java.text.SimpleDateFormat;
 import java.text.ParseException;
+import java.util.concurrent.*;
 
 /**
  * A very simple implementation of a Twitter client utilizing the new Twitter stream APIs:
@@ -38,15 +40,19 @@ import java.text.ParseException;
  */
 public class TwitterStreamer {
     public static void main(String[] args) {
+        stream(args[0], args[1]);
+    }
+
+    private static void stream(String username, String password) {
         // Set up an HttpClient instance.
         DefaultHttpClient client = new DefaultHttpClient();
 
         // Set up the credentials. Twitter's stream APIs require username/password.
         client.getCredentialsProvider().setCredentials(
                 new AuthScope("stream.twitter.com", 80),
-                new UsernamePasswordCredentials("username", "password"));
+                new UsernamePasswordCredentials(username, password));
 
-        // Call the "spritzer" stream, the others (gardenhose and firehose) require approval from Twitter.
+        // Call the "sample" stream, the heavier hoses require approval from Twitter.
         HttpGet get = new HttpGet("http://stream.twitter.com/1/statuses/sample.json");
         try {
             // Execute the request.
@@ -68,7 +74,9 @@ public class TwitterStreamer {
                     System.out.println("--------------------------------------------------");
                 }
                 else {
-                    System.out.println("USER IS NULL!!!");
+                    // Catch all for objects we don't fully understand. Twitter is good at adding new types without
+                    // changing the API version.
+                    System.out.println("Not sure what this object is...");
                     JsonGenerator generator = new JsonFactory().createJsonGenerator(System.out, JsonEncoding.UTF8);
                     generator.setCodec(new ObjectMapper());
                     generator.writeObject(status);
@@ -76,12 +84,13 @@ public class TwitterStreamer {
                 }
             }
 
-            System.out.println("No more statuses");
+            // The stream iterator
+            System.out.println("Disconnected");
         }
-        catch(Exception e) {
-            // Handle errors. Disconnects, for example.
-            System.out.println("Error connecting to spritzer: " + e.toString());
-            e.printStackTrace(System.out);
+        catch(IOException e) {
+            // Handle errors.
+            System.err.println("Error processing Twitter stream: " + e.toString());
+            e.printStackTrace(System.err);
         }
     }
 
@@ -91,7 +100,7 @@ public class TwitterStreamer {
     private static class TwitterStream implements Iterable<TwitterStatus> {
         private TwitterStatusIterator iterator;
 
-        public TwitterStream(InputStream stream) throws Exception {
+        public TwitterStream(InputStream stream) throws IOException {
             iterator = new TwitterStatusIterator(new JsonFactory().createJsonParser(stream));
         }
 
@@ -105,44 +114,71 @@ public class TwitterStreamer {
      * don't bicker too much over the InputStream.
      */
     private static class TwitterStatusIterator implements Iterator<TwitterStatus> {
+        private BlockingQueue<JsonNode> statusQueue;
         private ObjectMapper mapper;
-        private JsonParser parser;
-        private TwitterStatus next;
+        private boolean connected;
 
-        public TwitterStatusIterator(JsonParser parser) {
+        public TwitterStatusIterator(final JsonParser parser) {
+            // Create a queue to hold the JSON objects parsed from the stream.
+            statusQueue = new ArrayBlockingQueue<JsonNode>(50, false);
+
             mapper = new ObjectMapper();
-            this.parser = parser;
-            next = null;
+
+            // Whether or not the connection to Twitter is still open.
+            connected = true;
+
+            // Parse the JSON object skeleton in a separate thread to make sure we're keeping up with
+            // the stream from Twitter. Not keeping up will cause Twitter to disconnect from their end.
+            Thread reader = new Thread(new Runnable() {
+                public void run() {
+                    while(true) {
+                        try {
+                            // Try putting the JSON object in the queue if it will fit.
+                            if(!statusQueue.offer(mapper.readTree(parser))) {
+                                System.err.println("Dropped status");
+                            }
+                        }
+                        catch(JsonProcessingException e) {
+                            // A badly formatted JSON object, perhaps. Skip it.
+                            System.err.println("Failed to parse JSON object: " + e.toString());
+                            e.printStackTrace(System.err);
+                        }
+                        catch(IOException e) {
+                            // An IOException may indicate that Twitter has closed the stream on their end.
+                            System.err.println("Failed to parse JSON object: " + e.toString());
+                            e.printStackTrace(System.err);
+                            connected = false;
+                            return;
+                        }
+                    }
+                }
+            });
+            reader.start();
         }
 
         public synchronized boolean hasNext() {
-            // Check first to see if we haven't already read the next TwitterStatus from
-            // the stream API.
-            if(next == null) {
-                try {
-                    // No TwitterStatus held, try reading one.
-                    next = mapper.readValue(parser, TwitterStatus.class);
-                }
-                catch(IOException e) {
-                    // Failed to read one.
-                    next = null;
-                }
-            }
-
-            // If we've successfully held a TwitterStatus, then we have a next one.
-            return next != null;
+            return connected;
         }
 
         public synchronized TwitterStatus next() {
             // See if there's a next to return.
-            if((next == null) && !hasNext()) {
-                // None stored previously and an attempt to fetch a new one failed.
-                throw new NoSuchElementException("No more statuses to return");
+            while(hasNext()) {
+                // Try to parse and return a status object. Discard and log bogus JSON objects.
+                try {
+                    return mapper.treeToValue(statusQueue.take(), TwitterStatus.class);
+                }
+                catch(IOException e) {
+                    System.err.println("Failed to successfully parse JsonNode: " + e.toString());
+                    e.printStackTrace(System.err);
+                }
+                catch(InterruptedException e) {
+                    System.err.println("Interrupted while waiting to process queue");
+                    e.printStackTrace(System.err);
+                    connected = false;
+                }
             }
 
-            TwitterStatus toReturn = next;
-            next = null;
-            return toReturn;
+            throw new NoSuchElementException("No more statuses to return");
         }
 
         public void remove() {
