@@ -1,25 +1,23 @@
 package com.unclehulka.twitter.streamer;
 
-import org.apache.http.client.ClientProtocolException;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.HttpResponse;
+import com.sun.jersey.api.client.Client;
+import com.sun.jersey.api.client.ClientResponse;
+import com.sun.jersey.api.client.WebResource;
+import com.sun.jersey.api.client.filter.HTTPBasicAuthFilter;
+import com.sun.jersey.client.apache4.ApacheHttpClient4;
 import org.codehaus.jackson.*;
-import org.codehaus.jackson.annotate.JsonProperty;
 import org.codehaus.jackson.annotate.JsonAnySetter;
-import org.codehaus.jackson.map.annotate.JsonDeserialize;
-import org.codehaus.jackson.map.JsonDeserializer;
+import org.codehaus.jackson.annotate.JsonProperty;
 import org.codehaus.jackson.map.DeserializationContext;
+import org.codehaus.jackson.map.JsonDeserializer;
 import org.codehaus.jackson.map.ObjectMapper;
+import org.codehaus.jackson.map.PropertyNamingStrategy;
+import org.codehaus.jackson.map.annotate.JsonDeserialize;
 
 import java.io.*;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.Date;
-import java.text.SimpleDateFormat;
 import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.*;
 import java.util.concurrent.*;
 
 /**
@@ -44,22 +42,25 @@ public class TwitterStreamer {
     }
 
     private static void stream(String username, String password) {
-        // Set up an HttpClient instance.
-        DefaultHttpClient client = new DefaultHttpClient();
-
+        // Set up a Client instance.
+        Client client = new ApacheHttpClient4();
+        client.addFilter(new HTTPBasicAuthFilter(username, password));
+        
         // Set up the credentials. Twitter's stream APIs require username/password.
-        client.getCredentialsProvider().setCredentials(
-                new AuthScope("stream.twitter.com", 80),
-                new UsernamePasswordCredentials(username, password));
+        WebResource resource = client.resource("https://stream.twitter.com/1/statuses/sample.json");
 
         // Call the "sample" stream, the heavier hoses require approval from Twitter.
-        HttpGet get = new HttpGet("http://stream.twitter.com/1/statuses/sample.json");
         try {
             // Execute the request.
-            HttpResponse response = client.execute(get);
+            ClientResponse response = resource.get(ClientResponse.class);
+            
+            if(response.getStatus() != 200) {
+                System.err.println(response.getEntity(String.class));
+                return;
+            }
 
             // Create a new TwitterStream using the InputStream from the HTTP connection.
-            TwitterStream stream = new TwitterStream(response.getEntity().getContent());
+            TwitterStream stream = new TwitterStream(response.getEntityInputStream());
 
             // Iterate over the TwitterStatus objects parsed from the stream.
             for(TwitterStatus status : stream) {
@@ -70,17 +71,16 @@ public class TwitterStreamer {
                     System.out.println("--------------------------------------------------");
                 }
                 else if(status.delete != null) {
-                    System.out.println(String.format("Tweet %s deleted by %s", status.delete.status.id, status.delete.status.user_id));
+                    System.out.println(String.format("Tweet %s deleted by %s", status.delete.status.idStr, status.delete.status.userIdStr));
                     System.out.println("--------------------------------------------------");
                 }
                 else {
                     // Catch all for objects we don't fully understand. Twitter is good at adding new types without
                     // changing the API version.
-                    System.out.println("Not sure what this object is...");
-                    JsonGenerator generator = new JsonFactory().createJsonGenerator(System.out, JsonEncoding.UTF8);
+                    System.err.println("Not sure what this object is...");
+                    JsonGenerator generator = new JsonFactory().createJsonGenerator(System.err, JsonEncoding.UTF8);
                     generator.setCodec(new ObjectMapper());
                     generator.writeObject(status);
-                    System.exit(1);
                 }
             }
 
@@ -123,6 +123,7 @@ public class TwitterStreamer {
             statusQueue = new ArrayBlockingQueue<JsonNode>(50, false);
 
             mapper = new ObjectMapper();
+            mapper.setPropertyNamingStrategy(PropertyNamingStrategy.CAMEL_CASE_TO_LOWER_CASE_WITH_UNDERSCORES);
 
             // Whether or not the connection to Twitter is still open.
             connected = true;
@@ -165,11 +166,14 @@ public class TwitterStreamer {
             while(hasNext()) {
                 // Try to parse and return a status object. Discard and log bogus JSON objects.
                 try {
-                    return mapper.treeToValue(statusQueue.take(), TwitterStatus.class);
-                }
-                catch(IOException e) {
-                    System.err.println("Failed to successfully parse JsonNode: " + e.toString());
-                    e.printStackTrace(System.err);
+                    JsonNode node = statusQueue.take();
+                    try {
+                        return mapper.treeToValue(node, TwitterStatus.class);
+                    } catch (Exception e) {
+                        System.err.println("Failed to successfully parse JsonNode: " + e.toString());
+                        System.err.println(node);
+                        e.printStackTrace(System.err);
+                    }
                 }
                 catch(InterruptedException e) {
                     System.err.println("Interrupted while waiting to process queue");
@@ -187,130 +191,149 @@ public class TwitterStreamer {
         }
     }
 
+
     public static class TwitterStatus {
-        public Boolean truncated;
+        public Long id;
+
+        public String idStr;
 
         public String text;
 
-        public Boolean favorited;
+        public Boolean retweeted;
 
-        @JsonProperty(value = "in_reply_to_user_id")
-        public String inReplyToUserId;
+        public String inReplyToStatusIdStr;
 
-        @JsonProperty(value = "in_reply_to_status_id")
-        public Long inReplyToStatusId;
-
-        @JsonProperty(value = "in_reply_to_screen_name")
-        public String inReplyToScreenName;
-
-        public String source;
-
-        public String contributors;
-
-        public String geo;
-
-        public TwitterUser user;
-
-        public Long id;
-
-        @JsonProperty(value = "created_at")
         @JsonDeserialize(using = TwitterDateDeserializer.class)
         public Date createdAt;
 
-        public TwitterDelete delete;
+        public Long inReplyToStatusId;
 
-        @JsonProperty(value = "retweeted_status")
-        public TwitterStatus retweet;
+        public String inReplyToUserIdStr;
+
+        public Long inReplyToUserId;
+        
+        public TwitterDelete delete;
+        
+        public TwitterCoordinates coordinates;
+        
+        public String source;
+
+        public Boolean favorited;
+
+        public Long retweetCount;
+        
+        public String inReplyToScreenName;
+
+        public Boolean truncated;
+        
+        public TwitterEntities entities;
+
+        public Hashtags hashtags;
+        
+        public List<Long> contributors;
+
+        public JsonNode place;
+        
+        public JsonNode geo;
+
+        public TwitterUser user;
+
+        public RetweetedStatus retweetedStatus;
+
+        public Boolean possiblySensitive;
+
+        public Boolean possiblySensitiveEditable;
+        
+        public JsonNode urls;
 
         @JsonAnySetter
         public void setProperty(String key, Object value) {
-            System.out.println(String.format("Missing @JsonProperty in TwitterStatus for %s => %s", key, value.toString()));
-            System.exit(1);
+            System.err.println(String.format("Missing @JsonProperty in TwitterStatus for %s => %s", key, value));
         }
     }
 
     public static class TwitterUser {
-        @JsonProperty(value = "contributors_enabled")
+        public String idStr;
+
         public Boolean contributorsEnabled;
 
-        @JsonProperty(value = "profile_sidebar_fill_color")
-        public String profileSidebarFillColor;
-
-        @JsonProperty(value = "screen_name")
-        public String screenName;
-
-        @JsonProperty(value = "lang")
-        public String language;
-
-        @JsonProperty(value = "profile_background_tile")
-        public Boolean profileBackgroundTile;
-
-        public String location;
-
-        public Boolean following;
-
-        @JsonProperty(value = "profile_sidebar_border_color")
-        public String profileSidebarBorderColor;
-
         public Boolean verified;
+        
+        public JsonNode notifications;
 
-        @JsonProperty(value = "followers_count")
-        public Long followersCount;
-
-        public String description;
-
-        @JsonProperty(value = "friends_count")
-        public Long friendsCount;
-
-        public Boolean notifications;
-
-        @JsonProperty(value = "profile_background_color")
-        public String profileBackgroundColor;
-
-        public String url;
-
-        @JsonProperty(value = "favourites_count")
-        public Long favoritesCount;
-
-        @JsonProperty(value = "profile_text_color")
+        public Boolean profileUseBackgroundImage;
+        
         public String profileTextColor;
 
-        @JsonProperty(value = "protected")
-        public Boolean isProtected;
-
-        @JsonProperty(value = "time_zone")
-        public String timeZone;
-
-        public String name;
-
-        @JsonProperty(value = "statuses_count")
-        public Long statusesCount;
-
-        @JsonProperty(value = "profile_link_color")
-        public String profileLinkColor;
-
-        @JsonProperty(value = "profile_image_url")
-        public String profileImageUrl;
-
-        public String id;
-
-        @JsonProperty(value = "geo_enabled")
-        public Boolean geoEnabled;
-
-        @JsonProperty(value = "profile_background_image_url")
+        public Boolean defaultProfileImage;
+        
         public String profileBackgroundImageUrl;
 
-        @JsonProperty(value = "utc_offset")
+        public String profileLinkColor;
+
+        public String profileBackgroundColor;
+
+        public Boolean profileBackgroundTile;
+        
+        public String profileSidebarBorderColor;
+        
+        public String profileBackgroundImageUrlHttps;
+        
+        public String profileImageUrl;
+
+        public String profileImageUrlHttps;
+
+        public String profileSidebarFillColor;
+        
+        public String description;
+
+        public Boolean showAllInlineMedia;
+
+        public int favouritesCount;
+                
+        public String url;
+        
+        public String lang;
+
+        public Long statusesCount;
+        
+        public String timeZone;
+
+        public Boolean geoEnabled;
+
+        @JsonProperty("protected")
+        public Boolean isProtected;
+
+        public Long listedCount;
+
+        public JsonNode location;
+        
+        public String screenName;
+        
+        public String name;
+
+        public JsonNode following;
+
+        public Long friendsCount;
+
+        public Long id;
+
+        public Boolean defaultProfile;
+
+        public JsonNode followRequestSent;
+
+        public Boolean isTranslator;
+
         public Long utcOffset;
 
-        @JsonProperty(value = "created_at")
+        public Long followersCount;
+
         @JsonDeserialize(using = TwitterDateDeserializer.class)
         public Date createdAt;
 
         @JsonAnySetter
         public void setProperty(String key, Object value) {
-            System.out.println(String.format("Missing @JsonProperty in TwitterStatus for %s => %s", key, value.toString()));
-            System.exit(1);
+            System.err.println(String.format("Missing @JsonProperty in TwitterUser for %s => %s", key, value));
         }
     }
 
@@ -319,19 +342,175 @@ public class TwitterStreamer {
 
         @JsonAnySetter
         public void setProperty(String key, Object value) {
-            System.out.println(String.format("Missing @JsonProperty in TwitterDelete for %s => %s", key, value.toString()));
-            System.exit(1);
+            System.err.println(String.format("Missing @JsonProperty in TwitterDelete for %s => %s", key, value));
         }
     }
 
     public static class TwitterDeletedStatus {
-        public String id;
-        public String user_id;
+        public Long id;
+        
+        public String idStr;
+        
+        public Long userId;
+        
+        public String userIdStr;
 
         @JsonAnySetter
         public void setProperty(String key, Object value) {
-            System.out.println(String.format("Missing @JsonProperty in TwitterDeletedStatus for %s => %s", key, value.toString()));
-            System.exit(1);
+            System.err.println(String.format("Missing @JsonProperty in TwitterDeletedStatus for %s => %s", key, value));
+        }
+    }
+    
+    public static class TwitterCoordinates {
+        public String type;
+
+        public List<Double> coordinates;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.err.println(String.format("Missing @JsonProperty in TwitterCoordinates for %s => %s", key, value));
+        }
+    }
+    
+    public static class TwitterEntities {
+        public JsonNode userMentions;
+        
+        public JsonNode hashtags;
+        
+        public JsonNode media;
+        
+        public JsonNode urls;
+        
+        public JsonNode displayUrl;
+
+        public JsonNode expandedUrl;
+        
+        public JsonNode url;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.err.println(String.format("Missing @JsonProperty in TwitterEntities for %s => %s", key, value));
+        }
+    }
+    
+    public static class UserMention {
+        public String idStr;
+        
+        public List<Integer> indices;
+        
+        public String name;
+        
+        public String screenName;
+        
+        public Long id;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.err.println(String.format("Missing @JsonProperty in UserMention for %s => %s", key, value));
+        }
+    }
+
+    public static class Media {
+        public String idStr;
+        
+        public String type;
+        
+        public List<Integer> indices;
+
+        public String displayUrl;
+        
+        public String mediaUrl;
+        
+        public String url;
+        
+        public String expandedUrl;
+        
+        public String mediaUrlHttps;
+
+        public Long id;
+        
+        public Map<String, MediaSize> sizes;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.err.println(String.format("Missing @JsonProperty in Media for %s => %s", key, value));
+        }
+    }
+
+    public static class MediaSize {
+        public String resize;
+
+        public Long h;
+
+        public Long w;
+        
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.err.println(String.format("Missing @JsonProperty in MediaSize for %s => %s", key, value));
+        }
+    }
+    
+    public static class Hashtags {
+        public String url;
+        
+        public List<String> urls;
+
+        public JsonNode userMentions;
+        
+        public String expandedUrl;
+        
+        public String displayUrl;
+    }
+
+    public static class RetweetedStatus {
+        public String idStr;
+        
+        public String text;
+
+        public JsonNode geo;
+
+        public Boolean favorited;
+
+        public Boolean retweeted;
+        
+        public String source;
+        
+        public Long retweetCount;
+        
+        public String inReplyToScreenName;
+
+        public JsonNode entities;
+        
+        public Long inReplyToStatusId;
+
+        public String inReplyToStatusIdStr;
+
+        public Long inReplyToUserId;
+
+        public String inReplyToUserIdStr;
+
+        @JsonDeserialize(using = TwitterDateDeserializer.class)
+        public Date createdAt;
+
+        public JsonNode contributors;
+
+        public JsonNode place;
+
+        public JsonNode coordinates;
+
+        public TwitterUser user;
+
+        public Boolean truncated;
+
+        public Long id;
+
+        public Boolean possiblySensitive;
+
+        public Boolean possiblySensitiveEditable;
+
+        @JsonAnySetter
+        public void setProperty(String key, Object value) {
+            System.err.println(String.format("Missing @JsonProperty in RetweetedStatus for %s => %s", key, value));
         }
     }
 
